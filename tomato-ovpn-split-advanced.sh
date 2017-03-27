@@ -2,7 +2,7 @@
 export DEBUG= # uncomment/comment to enable/disable debug mode
 
 #         name: tomato-ovpn-split-advanced.sh
-#      version: 0.1.3 (beta), 25-mar-2017, by eibgrad
+#      version: 0.1.4 (beta), 26-mar-2017, by eibgrad
 #      purpose: redirect specific traffic over the WAN|VPN
 #  script type: openvpn (route-up, route-pre-down)
 # instructions:
@@ -30,6 +30,8 @@ export DEBUG= # uncomment/comment to enable/disable debug mode
 #  10. enable syslog (status->logs->logging configuration->syslog)
 #  11. (re)start openvpn client
 #  limitations:
+#    - due to a known bug ( http://bit.ly/2nXMSjx ), this script is only
+#      compatible w/ shibby tomato v136 or earlier
 #    - this script is NOT compatible w/ the routing policy tab of the
 #      openvpn client gui
 #    - this script is NOT compatible w/ qos
@@ -130,7 +132,7 @@ handle_openvpn_routes() {
         done
     fi
 
-    # route openvpn dns servers thru the tunnel
+    # route openvpn dns servers through the tunnel
     if [ ${ROUTE_DNS_THRU_VPN+x} ]; then
         awk '/dhcp-option DNS/{print $3}' $ENV_VARS \
           | while read ip; do
