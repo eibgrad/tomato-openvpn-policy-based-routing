@@ -2,7 +2,7 @@
 export DEBUG= # uncomment/comment to enable/disable debug mode
 
 #         name: tomato-ovpn-split-basic.sh
-#      version: 0.1.10 (beta), 26-mar-2017, by eibgrad
+#      version: 0.1.11 (beta), 28-mar-2017, by eibgrad
 #      purpose: redirect specific traffic over the WAN|VPN
 #  script type: openvpn (route-up, route-pre-down)
 # instructions:
@@ -26,8 +26,10 @@ export DEBUG= # uncomment/comment to enable/disable debug mode
 #   8. enable syslog (status->logs->logging configuration->syslog)
 #   9. (re)start openvpn client
 #  limitations:
-#    - due to a known bug ( http://bit.ly/2nXMSjx ), this script is only
-#      compatible w/ shibby tomato v136 or earlier
+#    - due to a known bug ( http://bit.ly/2nXMSjx ), this script **might**
+#      NOT be compatible w/ all versions of tomato; please report back to the
+#      author both working and non-working hardware+firmware configurations so
+#      we can create a compatibility/incompatibility database
 #    - this script is NOT compatible w/ the routing policy tab of the
 #      openvpn client gui
 #    - rules are limited to source ip/network/interface and destination
@@ -46,6 +48,7 @@ add_rules() {
 # ---------------------------------------------------------------------------- #
 
 # ------------------------------- BEGIN RULES -------------------------------- #
+#return # uncomment/comment to disable/enable all rules
 
 # specify source ip(s)/network(s)/interface(s) to be rerouted
 add_rule iif br1 # guest network
@@ -176,14 +179,14 @@ main() {
 
     # trap event-driven callbacks by openvpn and take appropriate action(s)
     case "$script_type" in
-              "route-up")   up "$@";;
-        "route-pre-down") down "$@";;
+              "route-up")   up;;
+        "route-pre-down") down;;
                        *) echo "WARNING: unexpected invocation: $script_type";;
     esac
 
     return 0
 }
 
-main "$@"
+main
 
 ) 2>&1 | logger -t $(basename $0)[$$]
