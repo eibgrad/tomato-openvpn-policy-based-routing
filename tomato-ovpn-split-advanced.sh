@@ -2,7 +2,7 @@
 export DEBUG= # uncomment/comment to enable/disable debug mode
 
 #         name: tomato-ovpn-split-advanced.sh
-#      version: 0.1.4 (beta), 26-mar-2017, by eibgrad
+#      version: 0.1.5 (beta), 28-mar-2017, by eibgrad
 #      purpose: redirect specific traffic over the WAN|VPN
 #  script type: openvpn (route-up, route-pre-down)
 # instructions:
@@ -30,8 +30,10 @@ export DEBUG= # uncomment/comment to enable/disable debug mode
 #  10. enable syslog (status->logs->logging configuration->syslog)
 #  11. (re)start openvpn client
 #  limitations:
-#    - due to a known bug ( http://bit.ly/2nXMSjx ), this script is only
-#      compatible w/ shibby tomato v136 or earlier
+#    - due to a known bug ( http://bit.ly/2nXMSjx ), this script **might**
+#      NOT be compatible w/ all versions of tomato; please report back to the
+#      author both working and non-working hardware+firmware configurations so
+#      we can create a compatibility/incompatibility database
 #    - this script is NOT compatible w/ the routing policy tab of the
 #      openvpn client gui
 #    - this script is NOT compatible w/ qos
@@ -49,11 +51,10 @@ add_rules() {
 # ---------------------------------------------------------------------------- #
 
 # ------------------------------- BEGIN RULES -------------------------------- #
+#return # uncomment/comment to disable/enable all rules
 add_rule -s 192.168.1.10
-#add_rule -s 192.168.1.110
-add_rule -p tcp -s 192.168.1.113 -m multiport --dports 80,443,3000:3100
-add_rule -m iprange --src-range 192.168.1.200-192.168.1.209
-add_rule -m mac --mac-source 00:11:22:33:44:55
+add_rule -p tcp -s 192.168.1.112 --dport 80
+add_rule -p tcp -s 192.168.1.122 --dport 3000:3100
 add_rule -i br1 # guest network
 add_rule -i br2 # iot network
 add_rule -d amazon.com # domain names NOT recommended; use ipset in dnsmasq
@@ -71,7 +72,9 @@ mkdir -p $WORK_DIR
 
 CID="${dev:4:1}"
 OVPN_CONF="/tmp/etc/openvpn/client${CID}/config.ovpn"
+
 ENV_VARS="$WORK_DIR/env_vars"
+RPF_VARS="$WORK_DIR/rpf_vars"
 
 # make environment variables persistent across openvpn events
 [ "$script_type" == "route-up" ] && env > $ENV_VARS
@@ -174,7 +177,7 @@ up() {
 
     # initialize chain for user-defined rules
     $IPT_MAN -A $FW_CHAIN -j CONNMARK --restore-mark
-    $IPT_MAN -A $FW_CHAIN -m mark ! --mark 0 -j ACCEPT
+    $IPT_MAN -A $FW_CHAIN -m mark ! --mark 0 -j RETURN
 
     # add rule for remote access over WAN or VPN
     if [ "$(env_get redirect_gateway)" == "1" ]; then
@@ -203,8 +206,13 @@ up() {
     # clear marks (not available on all builds)
     [ -e /proc/net/clear_marks ] && echo 1 > /proc/net/clear_marks
 
+    > $RPF_VARS
+
     # disable reverse path filtering
-    for i in /proc/sys/net/ipv4/conf/*/rp_filter; do echo 0 > $i; done
+    for i in /proc/sys/net/ipv4/conf/*/rp_filter; do
+        echo "$i=$(cat $i)" >> $RPF_VARS
+        echo 0 > $i
+    done
 
     # start split tunnel
     ip rule add fwmark $FW_MARK table $TID
@@ -214,6 +222,9 @@ down() {
     # stop split tunnel
     while ip rule del fwmark $FW_MARK table $TID 2> /dev/null
         do :; done
+
+    # enable reverse path filtering
+    while read i; do echo ${i#*=} > ${i%=*}; done < $RPF_VARS
 
     # remove rules
     while $IPT_MAN -D PREROUTING -j $FW_CHAIN 2> /dev/null
@@ -241,7 +252,7 @@ down() {
     ip route flush cache
 
     # cleanup
-    rm -f $ENV_VARS
+    rm -f $ENV_VARS $RPF_VARS
 }
 
 main() {
@@ -253,14 +264,14 @@ main() {
 
     # trap event-driven callbacks by openvpn and take appropriate action(s)
     case "$script_type" in
-              "route-up")   up "$@";;
-        "route-pre-down") down "$@";;
+              "route-up")   up;;
+        "route-pre-down") down;;
                        *) echo "WARNING: unexpected invocation: $script_type";;
     esac
 
     return 0
 }
 
-main "$@"
+main
 
 ) 2>&1 | logger -t $(basename $0)[$$]
