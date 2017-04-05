@@ -2,11 +2,14 @@
 export DEBUG= # uncomment/comment to enable/disable debug mode
 
 #         name: tomato-ovpn-split-basic.sh
-#      version: 0.1.11 (beta), 28-mar-2017, by eibgrad
+#      version: 0.1.12 (beta), 05-apr-2017, by eibgrad
 #      purpose: redirect specific traffic over the WAN|VPN
 #  script type: openvpn (route-up, route-pre-down)
 # instructions:
-#   1. add/modify rules for rerouting purposes
+#   1. add/modify rules to/in script for rerouting purposes; alternatively,
+#      rules may be imported from filesystem using extension .rule:
+#        /jffs/myrules.rule
+#        /jffs/myrules2.rule
 #   2. copy modified script to /jffs (or external storage, e.g., usb)
 #   3. make script executable:
 #        chmod +x /jffs/tomato-ovpn-split-basic.sh
@@ -48,7 +51,6 @@ add_rules() {
 # ---------------------------------------------------------------------------- #
 
 # ------------------------------- BEGIN RULES -------------------------------- #
-#return # uncomment/comment to disable/enable all rules
 
 # specify source ip(s)/network(s)/interface(s) to be rerouted
 add_rule iif br1 # guest network
@@ -71,17 +73,24 @@ add_rule from 192.168.2.0/24 to 133.133.133.0/24
 # -------------------------------- END RULES --------------------------------- #
 :;}
 
+# ignore all user-defined rules (internal and external)
+#IGNORE_USER_DEFINED_RULES= # uncomment/comment to enable/disable
+
 # route openvpn dns server(s) through tunnel
 ROUTE_DNS_THRU_VPN= # uncomment/comment to enable/disable
 
 # ---------------------- DO NOT CHANGE BELOW THIS LINE ----------------------- #
 
-# working directory
 WORK_DIR="/tmp/tomato_ovpn_split_basic"
 mkdir -p $WORK_DIR
 
+IMPORT_DIR="$(dirname $0)"
+IMPORT_RULE_EXT="rule"
+IMPORT_RULE_FILESPEC="$IMPORT_DIR/*.$IMPORT_RULE_EXT"
+
 CID="${dev:4:1}"
 OVPN_CONF="/tmp/etc/openvpn/client${CID}/config.ovpn"
+
 ENV_VARS="$WORK_DIR/env_vars_${CID}"
 
 # make environment variables persistent across openvpn events
@@ -93,7 +102,10 @@ TID="20${CID}" # valid values: 0-25
 WAN_GW="$(env_get route_net_gateway)"
 VPN_GW="$(env_get route_vpn_gateway)"
 
-add_rule() { ip rule add table $TID "$@"; }
+add_rule() {
+    ip rule del table $TID "$@" 2> /dev/null
+    ip rule add table $TID "$@"
+}
 
 handle_openvpn_routes() {
     local op="$([ "$script_type" == "route-up" ] && echo add || echo del)"
@@ -152,7 +164,17 @@ up() {
     ip route flush cache
 
     # start split tunnel
-    add_rules
+    if [ ! ${IGNORE_USER_DEFINED_RULES+x} ]; then
+        local files="$(echo $IMPORT_RULE_FILESPEC)"
+
+        if [ "$files" != "$IMPORT_RULE_FILESPEC" ]; then
+            # import rules from filesystem
+            for file in $files; do . $file; done
+        else
+            # add embedded rules
+            add_rules
+        fi
+    fi
 }
 
 down() {
