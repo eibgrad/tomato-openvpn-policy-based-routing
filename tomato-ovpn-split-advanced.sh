@@ -184,6 +184,7 @@ ipset_add() {
         echo "info: duplicate host|network; ignored: $2"
         total_dup=$((total_dup + 1))
     else
+        cat $ERR_MSG
         echo "error: cannot add host|network: $2"
         total_err=$((total_err + 1))
         return 1
