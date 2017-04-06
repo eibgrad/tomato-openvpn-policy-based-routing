@@ -176,7 +176,7 @@ total_dup=0
 total_warn=0
 total_err=0
 
-# function ipset_add( set value )
+# function ipset_add( set host/network )
 ipset_add() { 
     if ipset -A $1 $2 2> $ERR_MSG; then
         total_add=$((total_add + 1))
