@@ -187,10 +187,7 @@ ipset_add() {
         cat $ERR_MSG
         echo "error: cannot add host|network: $2"
         total_err=$((total_err + 1))
-        return 1
     fi
-
-    return 0
 }
 
 # function add_hosts_and_networks( file [curr-depth] )
