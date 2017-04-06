@@ -28,11 +28,11 @@ export DEBUG= # uncomment/comment to enable/disable debug mode
 #      configuration:
 #        ipset=/ipchicken.com/netflix.com/ovpn_split
 #        ipset=/google.com/cnet.com/gov/ovpn_split
-#   8. optional: add import files to /jffs (w/ extension .ovpn_split.net);
-#      these files contain hosts and/or networks (in cidr notation), one per
-#      line, you want preloaded into ipset (ovpn_split):
-#        /jffs/netflix.ovpn_split.net
-#        /jffs/pbr/import_files/australia.ovpn_split.net
+#   8. optional: add import files to /jffs (w/ extension .net); these files
+#      contain hosts and networks (in cidr notation), one per line, you want
+#      preloaded into ipset (ovpn_split):
+#        /jffs/amazon.net
+#        /jffs/netflix.net
 #   9. disable policy based routing (vpn tunneling->openvpn client->
 #      routing policy tab)
 #  10. disable qos
