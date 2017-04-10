@@ -156,10 +156,10 @@ DEBUG=
 # example import file contents:
 #   122.122.122.122
 #   212.212.212.0/24
-#   http://www.somewebsite.com/more_hosts_and_networks/
-#   ftp://ftp.someftpsite.com/more_hosts_and_networks/
-#   file:/mnt/myserver/myshare/more_hosts_and_networks
-#   /jffs/more_hosts_and_networks
+#   http://www.somewebsite.com/hosts_and_networks/
+#   ftp://ftp.someftpsite.com/hosts_and_networks.txt
+#   file:/mnt/myserver/myshare/hosts_and_networks.txt
+#   /jffs/hosts_and_networks.txt
 
 MAX_DEPTH=3 # per file, 0=unlimited (not recommended)
 
@@ -233,7 +233,7 @@ add_hosts_and_networks() {
             local file="$WORK_DIR/tmp.$$.$curr_depth.file"
 
             if $GET_FILE $line > $file; then
-                add_hosts_and_networks $file $((curr_depth + 1))
+                add_hosts_and_networks $file $((curr_depth + 1)) # recursive!
             else
                 echo "error: url not found: $line"
                 total_err=$((total_err + 1))
@@ -250,7 +250,7 @@ add_hosts_and_networks() {
                 total_err=$((total_err + 1))
             fi
 
-        # undetermined
+        # line contents undetermined
         else
             echo "error: unknown host|network|url|file: $line"
             total_err=$((total_err + 1))
@@ -263,16 +263,16 @@ main() {
     # start the clock
     local start_time=$(date +%s)
 
-    # delete cronjobs that got us here
+    # delete any cronjobs that may have gotten us here
     cru d $IMPORT_NET_CRU_ID_1
     cru d $IMPORT_NET_CRU_ID_2
 
-    # search import directory for network files
+    # search import directory for host/network files
     local files="$(echo $IMPORT_NET_FILESPEC)"
 
     if [ "$files" != "$IMPORT_NET_FILESPEC" ]; then
 
-        # add hosts and networks from each network file to ipset
+        # add hosts and networks from each host/network file to ipset
         for file in $files; do
             add_hosts_and_networks $file
         done
@@ -547,7 +547,7 @@ down() {
     # force routing system to recognize changes
     ip route flush cache
 
-    # cleanup work files
+    # cleanup
     rm -f $ENV_VARS $RPF_VARS $ADDED_ROUTES $IMPORT_NET_SCRIPT
 }
 
