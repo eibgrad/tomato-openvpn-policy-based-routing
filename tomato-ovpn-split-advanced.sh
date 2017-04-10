@@ -2,7 +2,7 @@
 export DEBUG= # uncomment/comment to enable/disable debug mode
 
 #         name: tomato-ovpn-split-advanced.sh
-#      version: 0.1.6 (beta), 05-apr-2017, by eibgrad
+#      version: 0.1.7 (beta), 09-apr-2017, by eibgrad
 #      purpose: redirect specific traffic over the WAN|VPN
 #  script type: openvpn (route-up, route-pre-down)
 # instructions:
@@ -65,18 +65,21 @@ add_rule -p tcp -s 192.168.1.112 --dport 80
 add_rule -p tcp -s 192.168.1.122 --dport 3000:3100
 add_rule -i br1 # guest network
 add_rule -i br2 # iot network
-#add_rule -d amazon.com # domain names NOT recommended; use ipset in dnsmasq
+add_rule -d amazon.com # domain names NOT recommended; use ipset in dnsmasq
 # -------------------------------- END RULES --------------------------------- #
 :;}
 
-# ignore all user-defined rules (internal and external)
-#IGNORE_USER_DEFINED_RULES= # uncomment/comment to enable/disable
+# include user-defined rules
+INCLUDE_USER_DEFINED_RULES= # uncomment/comment to enable/disable
 
 # route openvpn dns server(s) through tunnel
 ROUTE_DNS_THRU_VPN= # uncomment/comment to enable/disable
 
-# import additional hosts and networks (into ipset hash tables)
+# import additional hosts/networks (into ipset hash tables)
 #IMPORT_HOSTS_AND_NETWORKS= # uncomment/comment to enable/disable
+
+# import additional hosts/networks using scheduler (rather than inline)
+#USE_SCHED_TO_IMPORT_HOSTS_AND_NETWORKS= # uncomment/comment to enable/disable
 
 # ---------------------- DO NOT CHANGE BELOW THIS LINE ----------------------- #
 
@@ -100,11 +103,18 @@ OVPN_CONF="/tmp/etc/openvpn/client${CID}/config.ovpn"
 
 ENV_VARS="$WORK_DIR/env_vars"
 RPF_VARS="$WORK_DIR/rpf_vars"
+ADDED_ROUTES="$WORK_DIR/added_routes"
 
-# make environment variables persistent across openvpn events
-[ "$script_type" == "route-up" ] && env > $ENV_VARS
+# initialize work files
+if [ "$script_type" == "route-up" ]; then
+    # make environment variables persistent across openvpn events
+    env > $ENV_VARS
 
-env_get() { echo $(egrep -m1 "^$1=" $ENV_VARS | cut -d = -f2); }
+    > $RPF_VARS
+    > $ADDED_ROUTES
+fi
+
+env_get() { echo $(grep -Em1 "^$1=" $ENV_VARS | cut -d = -f2); }
 
 TID="200" # valid values: 1-255
 WAN_GW="$(env_get route_net_gateway)"
@@ -180,7 +190,7 @@ total_err=0
 ipset_add() { 
     if ipset -A $1 $2 2> $ERR_MSG; then
         total_add=$((total_add + 1))
-    elif egrep -q 'already (added|in set)' $ERR_MSG; then
+    elif grep -Eq 'already (added|in set)' $ERR_MSG; then
         echo "info: duplicate host|network; ignored: $2"
         total_dup=$((total_dup + 1))
     else
@@ -204,22 +214,22 @@ add_hosts_and_networks() {
 
     while read line; do
         # skip comments and blank lines
-        echo $line | egrep -q $MASK_COMMENT && continue
+        echo $line | grep -Eq $MASK_COMMENT && continue
 
-        # isolate host|network|url|file
+        # isolate host|network|url|file (the rest is treated as comments)
         line="$(echo $line | awk '{print $1}')"
 
-        # add host/network to appropriate ipset hash table
+        # line may contain host/network; add to appropriate ipset hash table
 
-        if echo $line | egrep -q $MASK_HOST; then
+        if echo $line | grep -Eq $MASK_HOST; then
             ipset_add $IPSET_HOST $line
-        elif echo $line | egrep -q $MASK_HOST_32; then
+        elif echo $line | grep -Eq $MASK_HOST_32; then
             ipset_add $IPSET_HOST $(echo $line | sed 's:/32::')
-        elif echo $line | egrep -q $MASK_NET; then
+        elif echo $line | grep -Eq $MASK_NET; then
             ipset_add $IPSET_NET $line
 
-        # file may contain reference to url
-        elif echo $line | egrep -q $MASK_URL; then
+        # line may contain reference to url
+        elif echo $line | grep -Eq $MASK_URL; then
             local file="$WORK_DIR/tmp.$$.$curr_depth.file"
 
             if $GET_FILE $line > $file; then
@@ -231,8 +241,8 @@ add_hosts_and_networks() {
 
             rm -f $file
 
-        # file may contain reference to file (/path/filename)
-        elif echo $line | egrep -q $MASK_FILE; then
+        # line may contain reference to file (/path/filename)
+        elif echo $line | grep -Eq $MASK_FILE; then
             if [ -f $line ]; then
                 add_hosts_and_networks $line $((curr_depth + 1))
             else
@@ -240,7 +250,7 @@ add_hosts_and_networks() {
                 total_err=$((total_err + 1))
             fi
 
-        # undetermined; report the error
+        # undetermined
         else
             echo "error: unknown host|network|url|file: $line"
             total_err=$((total_err + 1))
@@ -250,6 +260,9 @@ add_hosts_and_networks() {
 }
 
 main() {
+    # start the clock
+    local start_time=$(date +%s)
+
     # delete cronjobs that got us here
     cru d $IMPORT_NET_CRU_ID_1
     cru d $IMPORT_NET_CRU_ID_2
@@ -265,7 +278,7 @@ main() {
         done
     fi
 
-    # statistical report
+    # report the results
     echo "info: total additions: $total_add"
     echo "info: total duplicates: $total_dup"
     echo "info: total warnings: $total_warn"
@@ -273,6 +286,13 @@ main() {
 
     # cleanup
     rm -f $ERR_MSG
+
+    # calculate running time
+    local run_time=$(($(date +%s) - $start_time))
+
+    # print running time
+    printf "info: total runtime: %0.2d:%0.2d:%0.2d\n" \
+         $((run_time/60/60%24)) $((run_time/60%60)) $((run_time%60))
 }
 
 # start the import
@@ -318,9 +338,13 @@ verify_prerequisites() {
 }
 
 configure_ipset() {
+
+    # ipset modules and syntax vary depending on iptables version;
+    # adjust accordingly
+
     modprobe ip_set
 
-    if modprobe ip_set_hash_ip; then
+    if modprobe ip_set_hash_ip 2> /dev/null; then
         # iptables version >= 1.4.4
         modprobe ip_set_hash_net
         modprobe xt_set
@@ -332,84 +356,8 @@ configure_ipset() {
     fi
 }
 
-handle_openvpn_routes() {
-    local op="$([ "$script_type" == "route-up" ] && echo add || echo del)"
-
-    # route-noexec directive requires client to handle routes
-    if egrep -q '^[[:space:]]*route-noexec' $OVPN_CONF; then
-        local i=0
-
-        # search for openvpn routes
-        while :; do
-            i=$((i + 1))
-            local network="$(env_get route_network_$i)"
-
-            [ $network ] || break
-
-            local netmask="$(env_get route_netmask_$i)"
-            local gateway="$(env_get route_gateway_$i)"
-
-            [ $netmask ] || netmask="255.255.255.255"
-
-            # add/delete host/network route
-            route $op -net $network netmask $netmask gw $gateway
-        done
-    fi
-
-    # route openvpn dns servers through the tunnel
-    if [ ${ROUTE_DNS_THRU_VPN+x} ]; then
-        awk '/dhcp-option DNS/{print $3}' $ENV_VARS \
-          | while read ip; do
-                ip route $op $ip via $VPN_GW
-            done
-    fi
-}
-
 up() {
     [ ${DEBUG+x} ] && cat $ENV_VARS
-
-    # special handler for openvpn routes
-    handle_openvpn_routes
-
-    # copy main routing table to alternate (exclude all default gateways)
-    ip route show | egrep -v '^default |^0.0.0.0/1 |^128.0.0.0/1 ' \
-      | while read route; do
-            ip route add $route table $TID
-        done
-
-    if [ "$(env_get redirect_gateway)" == "1" ]; then
-        # add WAN as default gateway to alternate routing table
-        ip route add default via $WAN_GW table $TID
-    else
-        # add VPN as default gateway to alternate routing table
-        ip route add default via $VPN_GW table $TID
-    fi
-
-    # force routing system to recognize changes
-    ip route flush cache
-
-    # add ipset hash tables
-    ipset -N $IPSET_HOST iphash -q
-    ipset -F $IPSET_HOST
-    ipset -N $IPSET_NET nethash -q
-    ipset -F $IPSET_NET
-
-    # import additional hosts and networks (asynchronously)
-    if [ ${IMPORT_HOSTS_AND_NETWORKS+x} ]; then
-
-        # function _cru_add( cru-id seconds )
-        _cru_add() {
-            cru a $1 "$(date -d @$((epoch + $2)) +"%M %H %d %m %w") \
-                $IMPORT_NET_SCRIPT"
-        }
-
-        create_import_net_script
-        local epoch=$(date +%s)
-
-        # add script to scheduler; catch next and following minutes
-        _cru_add $IMPORT_NET_CRU_ID_1 60
-        _cru_add $IMPORT_NET_CRU_ID_2 120
-    fi
 
     # add chain for user-defined rules
     $IPT_MAN -N $FW_CHAIN
@@ -429,15 +377,44 @@ up() {
     fi
 
     # add user-defined rules to chain
-    if [ ! ${IGNORE_USER_DEFINED_RULES+x} ]; then
+    if [ ${INCLUDE_USER_DEFINED_RULES+x} ]; then
         local files="$(echo $IMPORT_RULE_FILESPEC)"
 
         if [ "$files" != "$IMPORT_RULE_FILESPEC" ]; then
-            # import rules from filesystem
+            # import (source) rules from filesystem
             for file in $files; do . $file; done
         else
-            # add embedded rules
+            # use embedded rules
             add_rules
+        fi
+    fi
+
+    # create ipset hash tables
+    ipset -N $IPSET_HOST iphash -q
+    ipset -F $IPSET_HOST
+    ipset -N $IPSET_NET nethash -q
+    ipset -F $IPSET_NET
+
+    # import additional hosts and networks into ipset hash tables
+    if [ ${IMPORT_HOSTS_AND_NETWORKS+x} ]; then
+        create_import_net_script
+
+        if [ ${USE_SCHED_TO_IMPORT_HOSTS_AND_NETWORKS+x} ]; then
+
+            # function _cru_add( cru-id seconds )
+            _cru_add() {
+                cru a $1 "$(date -d @$((epoch + $2)) +"%M %H %d %m %w") \
+                    $IMPORT_NET_SCRIPT"
+            }
+
+            local epoch=$(date +%s)
+
+            # add script to scheduler; catch next and following minutes
+            _cru_add $IMPORT_NET_CRU_ID_1 60
+            _cru_add $IMPORT_NET_CRU_ID_2 120
+        else
+            # execute inline (run synchronously only for debugging purposes)
+            [ ${DEBUG+x} ] && $IMPORT_NET_SCRIPT || ( $IMPORT_NET_SCRIPT & )
         fi
     fi
 
@@ -459,12 +436,61 @@ up() {
     # clear marks (not available on all builds)
     [ -e /proc/net/clear_marks ] && echo 1 > /proc/net/clear_marks
 
-    > $RPF_VARS
+    # route-noexec directive requires client to handle routes
+    if grep -Eq '^[[:space:]]*route-noexec' $OVPN_CONF; then
+        local i=0
+
+        # search for openvpn routes
+        while :; do
+            i=$((i + 1))
+            local network="$(env_get route_network_$i)"
+
+            [ "$network" ] || break
+    
+            local netmask="$(env_get route_netmask_$i)"
+            local gateway="$(env_get route_gateway_$i)"
+
+            [ "$netmask" ] || netmask="255.255.255.255"
+
+            # add host/network route
+            if route add -net $network netmask $netmask gw $gateway; then
+                echo "route del -net $network netmask $netmask gw $gateway" \
+                    >> $ADDED_ROUTES
+            fi
+        done
+    fi
+
+    # route openvpn dns servers through the tunnel
+    if [ ${ROUTE_DNS_THRU_VPN+x} ]; then
+        awk '/dhcp-option DNS/{print $3}' $ENV_VARS \
+          | while read ip; do
+                if ip route add $ip via $VPN_GW; then
+                    echo "ip route del $ip via $VPN_GW" >> $ADDED_ROUTES
+                fi
+            done
+    fi
+
+    # copy main routing table to alternate (exclude all default gateways)
+    ip route show | grep -Ev '^default |^0.0.0.0/1 |^128.0.0.0/1 ' \
+      | while read route; do
+            ip route add $route table $TID
+        done
+
+    if [ "$(env_get redirect_gateway)" == "1" ]; then
+        # add WAN as default gateway to alternate routing table
+        ip route add default via $WAN_GW table $TID
+    else
+        # add VPN as default gateway to alternate routing table
+        ip route add default via $VPN_GW table $TID
+    fi
+
+    # force routing system to recognize changes
+    ip route flush cache
 
     # disable reverse path filtering
-    for i in /proc/sys/net/ipv4/conf/*/rp_filter; do
-        echo "$i=$(cat $i)" >> $RPF_VARS
-        echo 0 > $i
+    for rpf in /proc/sys/net/ipv4/conf/*/rp_filter; do
+        echo "echo $(cat $rpf) > $rpf" >> $RPF_VARS
+        echo 0 > $rpf
     done
 
     # start split tunnel
@@ -477,7 +503,10 @@ down() {
         do :; done
 
     # enable reverse path filtering
-    while read i; do echo ${i#*=} > ${i%=*}; done < $RPF_VARS
+    while read rpf; do $rpf; done < $RPF_VARS
+
+    # remove added routes
+    while read route; do $route; done < $ADDED_ROUTES
 
     # remove rules
     while $IPT_MAN -D PREROUTING -j $FW_CHAIN 2> /dev/null
@@ -515,14 +544,11 @@ down() {
     # delete alternate routing table
     ip route flush table $TID
 
-    # special handler for openvpn routes
-    handle_openvpn_routes
-
     # force routing system to recognize changes
     ip route flush cache
 
-    # cleanup
-    rm -f $ENV_VARS $RPF_VARS $IMPORT_NET_SCRIPT
+    # cleanup work files
+    rm -f $ENV_VARS $RPF_VARS $ADDED_ROUTES $IMPORT_NET_SCRIPT
 }
 
 main() {
@@ -535,7 +561,7 @@ main() {
         return 1
     fi
 
-    # configure ipset modules
+    # configure ipset modules and adjust syntax according to iptables version
     configure_ipset
 
     # trap event-driven callbacks by openvpn and take appropriate action(s)
