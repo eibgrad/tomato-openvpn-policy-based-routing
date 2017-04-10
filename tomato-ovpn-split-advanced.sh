@@ -78,7 +78,7 @@ ROUTE_DNS_THRU_VPN= # uncomment/comment to enable/disable
 # import additional hosts/networks (into ipset hash tables)
 #IMPORT_HOSTS_AND_NETWORKS= # uncomment/comment to enable/disable
 
-# import additional hosts/networks using scheduler (rather than inline)
+# use scheduler (rather than inline) to import additional hosts/networks
 #USE_SCHED_TO_IMPORT_HOSTS_AND_NETWORKS= # uncomment/comment to enable/disable
 
 # ---------------------- DO NOT CHANGE BELOW THIS LINE ----------------------- #
