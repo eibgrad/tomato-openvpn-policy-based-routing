@@ -2,7 +2,7 @@
 export DEBUG= # uncomment/comment to enable/disable debug mode
 
 #         name: tomato-ovpn-split-basic.sh
-#      version: 0.1.13 (beta), 09-apr-2017, by eibgrad
+#      version: 0.1.14 (beta), 27-feb-2018, by eibgrad
 #      purpose: redirect specific traffic over the WAN|VPN
 #  script type: openvpn (route-up, route-pre-down)
 # instructions:
@@ -29,10 +29,8 @@ export DEBUG= # uncomment/comment to enable/disable debug mode
 #   8. enable syslog (status->logs->logging configuration->syslog)
 #   9. (re)start openvpn client
 #  limitations:
-#    - due to a known bug ( http://bit.ly/2nXMSjx ), this script **might**
-#      NOT be compatible w/ all versions of tomato; please report back to the
-#      author both working and non-working hardware+firmware configurations so
-#      we can create a compatibility/incompatibility database
+#    - due to a known bug ( http://bit.ly/2nXMSjx ), this script *might*
+#      NOT be compatible w/ all versions of tomato
 #    - this script is NOT compatible w/ the routing policy tab of the
 #      openvpn client gui
 #    - rules are limited to source ip/network/interface and destination
@@ -72,6 +70,7 @@ add_rule from 192.168.2.0/24 to 133.133.133.0/24
 
 # -------------------------------- END RULES --------------------------------- #
 :;}
+# ------------------------------ BEGIN OPTIONS ------------------------------- #
 
 # include user-defined rules
 INCLUDE_USER_DEFINED_RULES= # uncomment/comment to enable/disable
@@ -79,14 +78,15 @@ INCLUDE_USER_DEFINED_RULES= # uncomment/comment to enable/disable
 # route openvpn dns server(s) through tunnel
 ROUTE_DNS_THRU_VPN= # uncomment/comment to enable/disable
 
+# ------------------------------- END OPTIONS -------------------------------- #
+
 # ---------------------- DO NOT CHANGE BELOW THIS LINE ----------------------- #
 
-WORK_DIR="/tmp/tomato_ovpn_split_basic"
+WORK_DIR="tomato_ovpn_split_basic"
 mkdir -p $WORK_DIR
 
 IMPORT_DIR="$(dirname $0)"
-IMPORT_RULE_EXT="rule"
-IMPORT_RULE_FILESPEC="$IMPORT_DIR/*.$IMPORT_RULE_EXT"
+IMPORT_RULE_FILESPEC="$IMPORT_DIR/*.rule"
 
 CID="${dev:4:1}"
 OVPN_CONF="/tmp/etc/openvpn/client${CID}/config.ovpn"
@@ -118,15 +118,14 @@ up() {
 
     # route-noexec directive requires client to handle routes
     if grep -Eq '^[[:space:]]*route-noexec' $OVPN_CONF; then
-        local i=0
+        local i=1
 
         # search for openvpn routes
         while :; do
-            i=$((i + 1))
             local network="$(env_get route_network_$i)"
 
             [ "$network" ] || break
-    
+
             local netmask="$(env_get route_netmask_$i)"
             local gateway="$(env_get route_gateway_$i)"
 
@@ -137,6 +136,8 @@ up() {
                 echo "route del -net $network netmask $netmask gw $gateway" \
                     >> $ADDED_ROUTES
             fi
+
+            i=$((i + 1))
         done
     fi
 
@@ -215,4 +216,5 @@ main() {
 
 main
 
-) 2>&1 | logger -t $(basename $0)[$$]
+) 2>&1 | logger -p user.$([ ${DEBUG+x} ] && echo debug || echo notice) \
+    -t $(echo $(basename $0) | grep -Eo '^.{0,23}')[$$]
