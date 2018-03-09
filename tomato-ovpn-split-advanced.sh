@@ -2,7 +2,7 @@
 export DEBUG= # uncomment/comment to enable/disable debug mode
 
 #         name: tomato-ovpn-split-advanced.sh
-#      version: 0.1.7 (beta), 09-apr-2017, by eibgrad
+#      version: 0.1.8 (beta), 27-feb-2018, by eibgrad
 #      purpose: redirect specific traffic over the WAN|VPN
 #  script type: openvpn (route-up, route-pre-down)
 # instructions:
@@ -39,10 +39,8 @@ export DEBUG= # uncomment/comment to enable/disable debug mode
 #  11. enable syslog (status->logs->logging configuration->syslog)
 #  12. (re)start openvpn client
 #  limitations:
-#    - due to a known bug ( http://bit.ly/2nXMSjx ), this script **might**
-#      NOT be compatible w/ all versions of tomato; please report back to the
-#      author both working and non-working hardware+firmware configurations
-#      so we can create a compatibility/incompatibility database
+#    - due to a known bug ( http://bit.ly/2nXMSjx ), this script *might*
+#      NOT be compatible w/ all versions of tomato
 #    - this script is NOT compatible w/ the routing policy tab of the openvpn
 #      client gui
 #    - this script is NOT compatible w/ qos
@@ -65,9 +63,10 @@ add_rule -p tcp -s 192.168.1.112 --dport 80
 add_rule -p tcp -s 192.168.1.122 --dport 3000:3100
 add_rule -i br1 # guest network
 add_rule -i br2 # iot network
-add_rule -d amazon.com # domain names NOT recommended; use ipset in dnsmasq
+#add_rule -d amazon.com # domain names NOT recommended; use ipset in dnsmasq
 # -------------------------------- END RULES --------------------------------- #
 :;}
+# ------------------------------ BEGIN OPTIONS ------------------------------- #
 
 # include user-defined rules
 INCLUDE_USER_DEFINED_RULES= # uncomment/comment to enable/disable
@@ -76,27 +75,18 @@ INCLUDE_USER_DEFINED_RULES= # uncomment/comment to enable/disable
 ROUTE_DNS_THRU_VPN= # uncomment/comment to enable/disable
 
 # import additional hosts/networks (into ipset hash tables)
-#IMPORT_HOSTS_AND_NETWORKS= # uncomment/comment to enable/disable
+IMPORT_HOSTS_AND_NETWORKS= # uncomment/comment to enable/disable
 
-# use scheduler (rather than inline) to import additional hosts/networks
-#USE_SCHED_TO_IMPORT_HOSTS_AND_NETWORKS= # uncomment/comment to enable/disable
+# ------------------------------- END OPTIONS -------------------------------- #
 
 # ---------------------- DO NOT CHANGE BELOW THIS LINE ----------------------- #
 
-WORK_DIR="/tmp/tomato_ovpn_split_advanced"
+WORK_DIR="tomato_ovpn_split_advanced"
 mkdir -p $WORK_DIR
 
 IMPORT_DIR="$(dirname $0)"
-IMPORT_RULE_EXT="rule"
-IMPORT_RULE_FILESPEC="$IMPORT_DIR/*.$IMPORT_RULE_EXT"
-IMPORT_NET_EXT="net"
-IMPORT_NET_FILESPEC="$IMPORT_DIR/*.$IMPORT_NET_EXT"
-IMPORT_NET_NAME="import_hosts_and_networks"
-IMPORT_NET_PROCESS_NAME="$IMPORT_NET_NAME.sh"
-IMPORT_NET_SCRIPT="$WORK_DIR/$IMPORT_NET_PROCESS_NAME"
-IMPORT_NET_CRU_ID="$IMPORT_NET_NAME"
-IMPORT_NET_CRU_ID_1="${IMPORT_NET_CRU_ID}_1"
-IMPORT_NET_CRU_ID_2="${IMPORT_NET_CRU_ID}_2"
+IMPORT_RULE_FILESPEC="$IMPORT_DIR/*.rule"
+IMPORT_NET_FILESPEC="$IMPORT_DIR/*.net"
 
 CID="${dev:4:1}"
 OVPN_CONF="/tmp/etc/openvpn/client${CID}/config.ovpn"
@@ -137,181 +127,6 @@ add_rule() {
     $IPT_MAN -A $FW_CHAIN "$@" $IPT_MARK_MATCHED
 }
 
-create_import_net_script() {
-
-# ------------------------- BEGIN IMPORT_NET_SCRIPT -------------------------- #
-cat << "EOF" > $IMPORT_NET_SCRIPT
-#!/bin/sh
-DEBUG=
-(
-[ ${DEBUG+x} ] && set -x
-
-# import file naming format:
-#   *.net
-# example import files:
-#   /jffs/amazon.net
-#   /jffs/netflix.net
-# import file format (one per line):
-#   ip | network(cidr) | url | file (/path/filename)
-# example import file contents:
-#   122.122.122.122
-#   212.212.212.0/24
-#   http://www.somewebsite.com/hosts_and_networks/
-#   ftp://ftp.someftpsite.com/hosts_and_networks.txt
-#   file:/mnt/myserver/myshare/hosts_and_networks.txt
-#   /jffs/hosts_and_networks.txt
-
-MAX_DEPTH=3 # per file, 0=unlimited (not recommended)
-
-# ---------------------- DO NOT CHANGE BELOW THIS LINE ----------------------- #
-
-MASK_COMMENT='^[[:space:]]*(#|$)'
-MASK_HOST='^([0-9]{1,3}\.){3}[0-9]{1,3}$'
-MASK_HOST_32='^([0-9]{1,3}\.){3}[0-9]{1,3}/32$'
-MASK_NET='^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$'
-MASK_URL='^[[:space:]]*[a-zA-Z]*:/'
-MASK_FILE='^[[:space:]]*/'
-
-CURL="curl $([ ${DEBUG+x} ] || echo -sS)"
-WGET="wget $([ ${DEBUG+x} ] || echo -q) -O -"
-
-# not all builds support curl; fallback to wget (only supports http|ftp)
-GET_FILE="$(which curl > /dev/null && echo $CURL || echo $WGET)"
-
-ERR_MSG="$WORK_DIR/tmp.$$.err_msg"
-
-# tally additions, duplicates, warnings, and errors
-total_add=0
-total_dup=0
-total_warn=0
-total_err=0
-
-# function ipset_add( set host/network )
-ipset_add() { 
-    if ipset -A $1 $2 2> $ERR_MSG; then
-        total_add=$((total_add + 1))
-    elif grep -Eq 'already (added|in set)' $ERR_MSG; then
-        echo "info: duplicate host|network; ignored: $2"
-        total_dup=$((total_dup + 1))
-    else
-        cat $ERR_MSG
-        echo "error: cannot add host|network: $2"
-        total_err=$((total_err + 1))
-    fi
-}
-
-# function add_hosts_and_networks( file [curr-depth] )
-add_hosts_and_networks() {
-    local curr_depth=$([ $2 ] && echo $2 || echo 1)
-    local line
-
-    # don't exceed recursion limits
-    if [[ $MAX_DEPTH -gt 0 && $curr_depth -gt $MAX_DEPTH ]]; then
-        echo "warning: recursion limit ($MAX_DEPTH) exceeded: $1"
-        total_warn=$((total_warn + 1))
-        return
-    fi
-
-    while read line; do
-        # skip comments and blank lines
-        echo $line | grep -Eq $MASK_COMMENT && continue
-
-        # isolate host|network|url|file (the rest is treated as comments)
-        line="$(echo $line | awk '{print $1}')"
-
-        # line may contain host/network; add to appropriate ipset hash table
-
-        if echo $line | grep -Eq $MASK_HOST; then
-            ipset_add $IPSET_HOST $line
-        elif echo $line | grep -Eq $MASK_HOST_32; then
-            ipset_add $IPSET_HOST $(echo $line | sed 's:/32::')
-        elif echo $line | grep -Eq $MASK_NET; then
-            ipset_add $IPSET_NET $line
-
-        # line may contain reference to url
-        elif echo $line | grep -Eq $MASK_URL; then
-            local file="$WORK_DIR/tmp.$$.$curr_depth.file"
-
-            if $GET_FILE $line > $file; then
-                add_hosts_and_networks $file $((curr_depth + 1)) # recursive!
-            else
-                echo "error: url not found: $line"
-                total_err=$((total_err + 1))
-            fi
-
-            rm -f $file
-
-        # line may contain reference to file (/path/filename)
-        elif echo $line | grep -Eq $MASK_FILE; then
-            if [ -f $line ]; then
-                add_hosts_and_networks $line $((curr_depth + 1))
-            else
-                echo "error: file not found: $line"
-                total_err=$((total_err + 1))
-            fi
-
-        # line contents undetermined
-        else
-            echo "error: unknown host|network|url|file: $line"
-            total_err=$((total_err + 1))
-        fi
-
-    done < $1
-}
-
-main() {
-    # start the clock
-    local start_time=$(date +%s)
-
-    # delete any cronjobs that may have gotten us here
-    cru d $IMPORT_NET_CRU_ID_1
-    cru d $IMPORT_NET_CRU_ID_2
-
-    # search import directory for host/network files
-    local files="$(echo $IMPORT_NET_FILESPEC)"
-
-    if [ "$files" != "$IMPORT_NET_FILESPEC" ]; then
-
-        # add hosts and networks from each host/network file to ipset
-        for file in $files; do
-            add_hosts_and_networks $file
-        done
-    fi
-
-    # report the results
-    echo "info: total additions: $total_add"
-    echo "info: total duplicates: $total_dup"
-    echo "info: total warnings: $total_warn"
-    echo "info: total errors: $total_err"
-
-    # cleanup
-    rm -f $ERR_MSG
-
-    # calculate running time
-    local run_time=$(($(date +%s) - $start_time))
-
-    # print running time
-    printf "info: total runtime: %0.2d:%0.2d:%0.2d\n" \
-         $((run_time/60/60%24)) $((run_time/60%60)) $((run_time%60))
-}
-
-# start the import
-main
-) 2>&1 | logger -t $(basename $0)[$$]
-EOF
-sed -i \
--e "s:\$WORK_DIR:$WORK_DIR:g" \
--e "s:\$IMPORT_NET_FILESPEC:$IMPORT_NET_FILESPEC:g" \
--e "s:\$IPSET_HOST:$IPSET_HOST:g" \
--e "s:\$IPSET_NET:$IPSET_NET:g" \
--e "s:\$IMPORT_NET_CRU_ID_1:$IMPORT_NET_CRU_ID_1:g" \
--e "s:\$IMPORT_NET_CRU_ID_2:$IMPORT_NET_CRU_ID_2:g" $IMPORT_NET_SCRIPT
-[ ${DEBUG+x} ] || sed -ri 's/^DEBUG=/#DEBUG=/' $IMPORT_NET_SCRIPT
-chmod +x $IMPORT_NET_SCRIPT
-# -------------------------- END IMPORT_NET_SCRIPT --------------------------- #
-
-} # end of create_import_net_script
-
 verify_prerequisites() {
     local err_found=false
 
@@ -328,8 +143,7 @@ verify_prerequisites() {
     fi
 
     # only one active openvpn client allowed (firewall conflict)
-    if pidof vpnclient1 > /dev/null && \
-       pidof vpnclient2 > /dev/null; then
+    if pidof vpnclient1 > /dev/null && pidof vpnclient2 > /dev/null; then
         echo "fatal error: only one active openvpn client allowed"
         err_found=true
     fi
@@ -338,22 +152,114 @@ verify_prerequisites() {
 }
 
 configure_ipset() {
-
-    # ipset modules and syntax vary depending on iptables version;
-    # adjust accordingly
-
-    modprobe ip_set
-
-    if modprobe ip_set_hash_ip 2> /dev/null; then
-        # iptables version >= 1.4.4
-        modprobe ip_set_hash_net
-        modprobe xt_set
-        MATCH_SET="--match-set"
-    else
-        # iptables version < 1.4.4
-        modprobe ipt_set
-        MATCH_SET="--set"
+    # verify DNSMasq supports ipset
+    if ! dnsmasq -v | grep -Eq '^.*(^|[[:space:]]+)ipset([[:space:]]+|$)'; then
+        echo "warning: installed version of DNSMasq does not support ipset"
+        return 1
     fi
+
+    # load ipset module
+    modprobe ip_set 2> /dev/null || return 1
+
+    # ipset sub-modules vary depending on ipset version; adjust accordingly
+    if  modprobe ip_set_hash_ip  2> /dev/null; then
+        # ipset protocol 6
+        modprobe ip_set_hash_net
+    else
+        # ipset protocol 4
+        modprobe ip_set_iphash
+        modprobe ip_set_nethash
+    fi
+
+    # iptables "set" module varies depending on version; adjust accordingly
+    modprobe ipt_set 2> /dev/null || modprobe xt_set
+
+    # parse the iptables version # into subversions
+    _subver() { awk -v v="$v" -v i="$1" 'BEGIN {split(v,a,"."); print a[i]}'; }
+    local v="$(iptables --version | grep -o '[0-9\.]*')"
+    local v1=$(_subver 1)
+    local v2=$(_subver 2)
+    local v3=$(_subver 3)
+
+    # iptables v1.4.4 and above has deprecated --set in favor of --match-set
+    if [[ $v1 -gt 1 || $v2 -gt 4 ]] || [[ $v2 -eq 4 && $v3 -ge 4 ]]; then
+       MATCH_SET="--match-set"
+    else
+       MATCH_SET="--set"
+    fi
+
+    return 0
+}
+
+import_hosts_and_networks() {
+    # import file naming format:
+    #   *.net
+    # example import files:
+    #   /jffs/amazon.net
+    #   /jffs/netflix.net
+    # import file format (one per line):
+    #   ip | network(cidr)
+    # example import file contents:
+    #   122.122.122.122
+    #   212.212.212.0/24
+
+    local MASK_COMMENT='^[[:space:]]*(#|$)'
+    local MASK_HOST='^([0-9]{1,3}\.){3}[0-9]{1,3}$'
+    local MASK_HOST_32='^([0-9]{1,3}\.){3}[0-9]{1,3}/32$'
+    local MASK_NET='^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$'
+
+    local ERR_MSG="$WORK_DIR/tmp.$$.err_msg"
+
+    # ipset( set host|network )
+    _ipset_add() {
+        if ipset -A $1 $2 2> $ERR_MSG; then
+            return
+        elif grep -Eq 'already (added|in set)' $ERR_MSG; then
+            echo "info: duplicate host|network; ignored: $2"
+        else
+            cat $ERR_MSG
+            echo "error: cannot add host|network: $2"
+        fi
+    }
+
+    # _add_hosts_and_networks( file )
+    _add_hosts_and_networks() {
+        local line
+
+        while read line; do
+            # skip comments and blank lines
+            echo $line | grep -Eq $MASK_COMMENT && continue
+
+            # isolate host|network (the rest is treated as comments)
+            line="$(echo $line | awk '{print $1}')"
+
+            # line may contain host/network; add to appropriate ipset hash table
+            if echo $line | grep -Eq $MASK_HOST; then
+                _ipset_add $IPSET_HOST $line
+            elif echo $line | grep -Eq $MASK_HOST_32; then
+                _ipset_add $IPSET_HOST $(echo $line | sed 's:/32::')
+            elif echo $line | grep -Eq $MASK_NET; then
+                _ipset_add $IPSET_NET $line
+            else
+                echo "error: unknown host|network: $line"
+            fi
+
+        done < $1
+    }
+
+    local files="$(echo $IMPORT_NET_FILESPEC)"
+
+    if [ "$files" != "$IMPORT_NET_FILESPEC" ]; then
+        local file
+
+        # add hosts and networks from each host/network file to ipset
+        for file in $files; do
+            _add_hosts_and_networks $file
+        done
+    fi
+
+    # cleanup
+    rm -f $ERR_MSG
 }
 
 up() {
@@ -390,37 +296,23 @@ up() {
     fi
 
     # create ipset hash tables
-    ipset -N $IPSET_HOST iphash -q
-    ipset -F $IPSET_HOST
-    ipset -N $IPSET_NET nethash -q
-    ipset -F $IPSET_NET
+    if [ ${IPSET_SUPPORTED+x} ]; then
+        ipset -N $IPSET_HOST iphash -q
+        ipset -F $IPSET_HOST
+        ipset -N $IPSET_NET nethash -q
+        ipset -F $IPSET_NET
+    fi
 
     # import additional hosts and networks into ipset hash tables
-    if [ ${IMPORT_HOSTS_AND_NETWORKS+x} ]; then
-        create_import_net_script
-
-        if [ ${USE_SCHED_TO_IMPORT_HOSTS_AND_NETWORKS+x} ]; then
-
-            # function _cru_add( cru-id seconds )
-            _cru_add() {
-                cru a $1 "$(date -d @$((epoch + $2)) +"%M %H %d %m %w") \
-                    $IMPORT_NET_SCRIPT"
-            }
-
-            local epoch=$(date +%s)
-
-            # add script to scheduler; catch next and following minutes
-            _cru_add $IMPORT_NET_CRU_ID_1 60
-            _cru_add $IMPORT_NET_CRU_ID_2 120
-        else
-            # execute inline (run synchronously only for debugging purposes)
-            [ ${DEBUG+x} ] && $IMPORT_NET_SCRIPT || ( $IMPORT_NET_SCRIPT & )
-        fi
+    if [[ ${IMPORT_HOSTS_AND_NETWORKS+x} && ${IPSET_SUPPORTED+x} ]]; then
+        import_hosts_and_networks
     fi
 
     # add rules for ipset hash tables
-    add_rule -m set $MATCH_SET $IPSET_HOST dst
-    add_rule -m set $MATCH_SET $IPSET_NET dst
+    if [ ${IPSET_SUPPORTED+x} ]; then
+        add_rule -m set $MATCH_SET $IPSET_HOST dst
+        add_rule -m set $MATCH_SET $IPSET_NET  dst
+    fi
 
     # finalize chain for user-defined rules
     $IPT_MAN -A $FW_CHAIN -m mark ! --mark $FW_MARK $IPT_MARK_NOMATCH
@@ -428,25 +320,26 @@ up() {
 
     # add rules (router only)
     $IPT_MAN -A OUTPUT -j CONNMARK --restore-mark
-    $IPT_MAN -A OUTPUT -m mark --mark 0 \
-        -m set $MATCH_SET $IPSET_HOST dst $IPT_MARK_MATCHED
-    $IPT_MAN -A OUTPUT -m mark --mark 0 \
-        -m set $MATCH_SET $IPSET_NET dst $IPT_MARK_MATCHED
+    if [ ${IPSET_SUPPORTED+x} ]; then
+        $IPT_MAN -A OUTPUT -m mark --mark 0 \
+            -m set $MATCH_SET $IPSET_HOST dst $IPT_MARK_MATCHED
+        $IPT_MAN -A OUTPUT -m mark --mark 0 \
+            -m set $MATCH_SET $IPSET_NET  dst $IPT_MARK_MATCHED
+    fi
 
     # clear marks (not available on all builds)
     [ -e /proc/net/clear_marks ] && echo 1 > /proc/net/clear_marks
 
     # route-noexec directive requires client to handle routes
     if grep -Eq '^[[:space:]]*route-noexec' $OVPN_CONF; then
-        local i=0
+        local i=1
 
         # search for openvpn routes
         while :; do
-            i=$((i + 1))
             local network="$(env_get route_network_$i)"
 
             [ "$network" ] || break
-    
+
             local netmask="$(env_get route_netmask_$i)"
             local gateway="$(env_get route_gateway_$i)"
 
@@ -457,6 +350,8 @@ up() {
                 echo "route del -net $network netmask $netmask gw $gateway" \
                     >> $ADDED_ROUTES
             fi
+
+            i=$((i + 1))
         done
     fi
 
@@ -503,7 +398,7 @@ down() {
         do :; done
 
     # enable reverse path filtering
-    while read rpf; do $rpf; done < $RPF_VARS
+    while read rpf; do eval $rpf; done < $RPF_VARS
 
     # remove added routes
     while read route; do $route; done < $ADDED_ROUTES
@@ -514,32 +409,23 @@ down() {
     $IPT_MAN -F $FW_CHAIN
     $IPT_MAN -X $FW_CHAIN
     $IPT_MAN -D OUTPUT -j CONNMARK --restore-mark
-    $IPT_MAN -D OUTPUT -m mark --mark 0 \
-        -m set $MATCH_SET $IPSET_HOST dst $IPT_MARK_MATCHED
-    $IPT_MAN -D OUTPUT -m mark --mark 0 \
-        -m set $MATCH_SET $IPSET_NET dst $IPT_MARK_MATCHED
+    if [ ${IPSET_SUPPORTED+x} ]; then
+        $IPT_MAN -D OUTPUT -m mark --mark 0 \
+            -m set $MATCH_SET $IPSET_HOST dst $IPT_MARK_MATCHED
+        $IPT_MAN -D OUTPUT -m mark --mark 0 \
+            -m set $MATCH_SET $IPSET_NET  dst $IPT_MARK_MATCHED
+    fi
 
     # clear marks (not available on all builds)
     [ -e /proc/net/clear_marks ] && echo 1 > /proc/net/clear_marks
 
-    # cancel any pending import jobs
-    if cru l | grep -q $IMPORT_NET_CRU_ID; then
-        cru d $IMPORT_NET_CRU_ID_1
-        cru d $IMPORT_NET_CRU_ID_2
-        sleep 3
-    fi
-
-    # terminate any active/running import jobs
-    while pidof $IMPORT_NET_PROCESS_NAME > /dev/null; do
-        killall $IMPORT_NET_PROCESS_NAME 2> /dev/null
-        sleep 2
-    done
-
     # remove ipset hash tables
-    ipset -F $IPSET_HOST
-    ipset -X $IPSET_HOST
-    ipset -F $IPSET_NET
-    ipset -X $IPSET_NET
+    if [ ${IPSET_SUPPORTED+x} ]; then
+        ipset -F $IPSET_HOST
+        ipset -X $IPSET_HOST
+        ipset -F $IPSET_NET
+        ipset -X $IPSET_NET
+    fi
 
     # delete alternate routing table
     ip route flush table $TID
@@ -548,7 +434,7 @@ down() {
     ip route flush cache
 
     # cleanup
-    rm -f $ENV_VARS $RPF_VARS $ADDED_ROUTES $IMPORT_NET_SCRIPT
+    rm -f $ENV_VARS $RPF_VARS $ADDED_ROUTES
 }
 
 main() {
@@ -556,13 +442,10 @@ main() {
     [[ -t 0 || "$(env_get dev_type)" != "tun" ]] && return 1
 
     # quit if we fail to meet any prerequisites
-    if ! verify_prerequisites; then
-        echo "exiting on fatal error(s); correct and reboot"
-        return 1
-    fi
+    verify_prerequisites || { echo "exiting on fatal error(s)"; return 1; }
 
-    # configure ipset modules and adjust syntax according to iptables version
-    configure_ipset
+    # configure ipset modules and adjust iptables "set" syntax according to version
+    configure_ipset && IPSET_SUPPORTED= || { echo "warning: ipset not supported"; }
 
     # trap event-driven callbacks by openvpn and take appropriate action(s)
     case "$script_type" in
@@ -576,4 +459,5 @@ main() {
 
 main
 
-) 2>&1 | logger -t $(basename $0)[$$]
+) 2>&1 | logger -p user.$([ ${DEBUG+x} ] && echo debug || echo notice) \
+    -t $(echo $(basename $0) | grep -Eo '^.{0,23}')[$$]
